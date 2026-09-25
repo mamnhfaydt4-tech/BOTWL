@@ -21,6 +21,7 @@ DATASTORE_NAME      = "ActivatedPlayers_V3"
 DATASTORE_KEY       = "AllData"
 OWNER_DISCORD_ID    = int(os.getenv("OWNER_DISCORD_ID", "0"))  # Discord ID حقك
 ADMIN_ROLE_NAME     = os.getenv("ADMIN_ROLE_NAME", "Admin")    # اسم الرول في سيرفرك
+GUILD_ID            = int(os.getenv("GUILD_ID", "0"))          # آيدي سيرفرك (لمزامنة فورية)
 
 # رابط Open Cloud API
 BASE_URL = f"https://apis.roblox.com/datastores/v1/universes/{UNIVERSE_ID}/standard-datastores"
@@ -308,7 +309,17 @@ async def help_cmd(interaction: discord.Interaction):
 
 @bot.event
 async def on_ready():
-    await tree.sync()  # مزامنة الأوامر مع Discord
+    # لو معرّف GUILD_ID، ننسخ كل الأوامر العالمية لهذا السيرفر ونزامنها عليه
+    # مباشرة (تظهر فورًا)، بدل الانتظار لين ساعة للمزامنة العالمية.
+    if GUILD_ID:
+        guild = discord.Object(id=GUILD_ID)
+        tree.copy_global_to(guild=guild)
+        synced = await tree.sync(guild=guild)
+        print(f"🔄 تمت مزامنة {len(synced)} أمر على السيرفر {GUILD_ID} (فورية)")
+    else:
+        synced = await tree.sync()
+        print(f"🔄 تمت مزامنة {len(synced)} أمر عالميًا (قد تأخذ حتى ساعة للظهور)")
+
     print(f"✅ البوت جاهز: {bot.user}")
     print(f"🌐 Universe ID: {UNIVERSE_ID}")
     print(f"📦 DataStore: {DATASTORE_NAME}")
