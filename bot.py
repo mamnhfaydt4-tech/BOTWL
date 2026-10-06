@@ -43,6 +43,7 @@ OWNER_DISCORD_ID = _int("OWNER_DISCORD_ID")
 GUILD_ID = _int("GUILD_ID")                    # آيدي سيرفرك
 ADMIN_ROLE_ID = _int("ADMIN_ROLE_ID")          # رتبة الإداريين (بالآيدي وليس الاسم)
 ACTIVE_ROLE_ID = _int("ACTIVE_ROLE_ID")        # رتبة "مفعّل" الإلزامية
+INACTIVE_ROLE_ID = _int("INACTIVE_ROLE_ID")    # رتبة "غير مفعّل" تنعطى عند إلغاء التفعيل (اختياري)
 REMOVE_ROLE_IDS = [
     int(x) for x in os.getenv("REMOVE_ROLE_IDS", "").replace(" ", "").split(",") if x.isdigit()
 ]                                               # الرتبتين اللي تنسحب عند التفعيل
@@ -219,49 +220,59 @@ def clean_reason(text: str) -> str:
     return text[:REASON_MAX]
 
 
-async def post_to(channel_id: int, embed: discord.Embed):
+async def post_to(channel_id: int, text: str):
     try:
         ch = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-        await ch.send(embed=embed, allowed_mentions=NO_MENTIONS)
+        await ch.send(text[:2000], allowed_mentions=NO_MENTIONS)
     except Exception as e:
         log.error("فشل الإرسال إلى الروم %s: %s", channel_id, e)
 
 
-def activation_result_embed(by_mention, rec, member_mention, kind_label):
-    e = discord.Embed(title="✅ تم تفعيل الشخص", color=0x2ECC71, timestamp=discord.utils.utcnow())
-    e.add_field(name="يوزر روبلوكس", value=f"`{rec['robloxName']}` (ID: {rec['robloxId']})", inline=False)
-    e.add_field(name="حساب الديسكورد", value=member_mention, inline=False)
-    e.add_field(name="بواسطة", value=by_mention, inline=False)
-    e.add_field(name="نوع التفعيل", value=kind_label, inline=False)
-    e.add_field(name="السبب", value=rec["reason"], inline=False)
-    return e
+# رسائل نصية عادية (مو Embed) عشان البحث في الديسكورد يلقاها
+
+def _rn(rec) -> str:
+    return discord.utils.escape_markdown(str(rec["robloxName"]))
 
 
-def activation_form_embed(by_mention, rec, member_mention):
-    e = discord.Embed(title="نموذج التفعيل", color=0x2ECC71, timestamp=discord.utils.utcnow())
-    e.add_field(name="اسم الشخص الذي فعّله", value=by_mention, inline=False)
-    e.add_field(name="يوزر الشخص روبلوكس", value=rec["robloxName"], inline=False)
-    e.add_field(name="يوزر الشخص ديسكورد", value=member_mention, inline=False)
-    e.add_field(name="سبب التفعيل", value=rec["reason"], inline=False)
-    return e
+def activation_result_text(by_mention, rec, member_mention, kind_label):
+    return (
+        "✅ **تم تفعيل الشخص**\n\n"
+        f"**يوزر روبلوكس :** {_rn(rec)} (ID: {rec['robloxId']})\n"
+        f"**حساب الديسكورد :** {member_mention}\n"
+        f"**بواسطة :** {by_mention}\n"
+        f"**نوع التفعيل :** {kind_label}\n"
+        f"**السبب :** {rec['reason']}"
+    )
 
 
-def deactivation_result_embed(by_mention, rec, member_mention, reason):
-    e = discord.Embed(title="❌ تم إلغاء تفعيل الشخص", color=0xE74C3C, timestamp=discord.utils.utcnow())
-    e.add_field(name="يوزر روبلوكس", value=f"`{rec['robloxName']}` (ID: {rec['robloxId']})", inline=False)
-    e.add_field(name="حساب الديسكورد", value=member_mention, inline=False)
-    e.add_field(name="بواسطة", value=by_mention, inline=False)
-    e.add_field(name="سبب الإلغاء", value=reason, inline=False)
-    return e
+def activation_form_text(by_mention, rec, member_mention):
+    return (
+        "📋 **نموذج التفعيل**\n\n"
+        f"**اسم الشخص الذي فعّله :** {by_mention}\n"
+        f"**يوزر الشخص روبلوكس :** {_rn(rec)}\n"
+        f"**يوزر الشخص ديسكورد :** {member_mention}\n"
+        f"**سبب التفعيل :** {rec['reason']}"
+    )
 
 
-def deactivation_form_embed(by_mention, rec, member_mention, reason):
-    e = discord.Embed(title="نموذج إلغاء تفعيل", color=0xE74C3C, timestamp=discord.utils.utcnow())
-    e.add_field(name="اسم الإداري", value=by_mention, inline=False)
-    e.add_field(name="يوزر الشخص روبلوكس", value=rec["robloxName"], inline=False)
-    e.add_field(name="يوزر الشخص ديسكورد", value=member_mention, inline=False)
-    e.add_field(name="سبب إلغاء التفعيل", value=reason, inline=False)
-    return e
+def deactivation_result_text(by_mention, rec, member_mention, reason):
+    return (
+        "❌ **تم إلغاء تفعيل الشخص**\n\n"
+        f"**يوزر روبلوكس :** {_rn(rec)} (ID: {rec['robloxId']})\n"
+        f"**حساب الديسكورد :** {member_mention}\n"
+        f"**بواسطة :** {by_mention}\n"
+        f"**سبب الإلغاء :** {reason}"
+    )
+
+
+def deactivation_form_text(by_mention, rec, member_mention, reason):
+    return (
+        "📋 **نموذج إلغاء تفعيل**\n\n"
+        f"**اسم الإداري :** {by_mention}\n"
+        f"**يوزر الشخص روبلوكس :** {_rn(rec)}\n"
+        f"**يوزر الشخص ديسكورد :** {member_mention}\n"
+        f"**سبب إلغاء التفعيل :** {reason}"
+    )
 
 
 async def get_member(guild: discord.Guild, user_id: int):
@@ -409,12 +420,12 @@ async def run_activation(interaction: discord.Interaction, roblox_username: str,
         return
 
     by, mm = interaction.user.mention, member.mention
-    result = activation_result_embed(by, record, mm, REASON_LABELS[kind])
+    result = activation_result_text(by, record, mm, REASON_LABELS[kind])
     if not await send_dm(member.id, DM_ACTIVATED):
-        result.set_footer(text=DM_FAIL_NOTE)
-    await interaction.followup.send(embed=result, allowed_mentions=NO_MENTIONS)
+        result += "\n\n" + DM_FAIL_NOTE
+    await interaction.followup.send(result, allowed_mentions=NO_MENTIONS)
     await post_to(LOG_CHANNEL_ID, result)
-    await post_to(FORM_CHANNEL_ID, activation_form_embed(by, record, mm))
+    await post_to(FORM_CHANNEL_ID, activation_form_text(by, record, mm))
 
 
 # ============ منطق إلغاء التفعيل ============
@@ -445,18 +456,25 @@ async def finish_deactivation(by_mention: str, rec: dict, reason: str, guild: di
     except Exception as e:
         log.warning("تعذّر جلب العضو %s: %s", did, e)
     if strip_role and member:
+        audit = f"إلغاء تفعيل: {reason[:100]}"
         role = guild.get_role(ACTIVE_ROLE_ID)
         if role and role in member.roles:
             try:
-                await member.remove_roles(role, reason=f"إلغاء تفعيل: {reason[:100]}")
+                await member.remove_roles(role, reason=audit)
             except Exception as e:
                 log.error("فشل سحب رتبة التفعيل: %s", e)
+        inactive = guild.get_role(INACTIVE_ROLE_ID) if INACTIVE_ROLE_ID else None
+        if inactive and inactive not in member.roles:
+            try:
+                await member.add_roles(inactive, reason=audit)
+            except Exception as e:
+                log.error("فشل إعطاء رتبة غير مفعّل (تأكد إن رتبة البوت أعلى منها): %s", e)
     mm = member.mention if member else f"<@{did}>"
-    result = deactivation_result_embed(by_mention, rec, mm, reason)
+    result = deactivation_result_text(by_mention, rec, mm, reason)
     if not await send_dm(did, DM_DEACTIVATED, reason=reason):
-        result.set_footer(text=DM_FAIL_NOTE)
+        result += "\n\n" + DM_FAIL_NOTE
     await post_to(LOG_CHANNEL_ID, result)
-    await post_to(FORM_CHANNEL_ID, deactivation_form_embed(by_mention, rec, mm, reason))
+    await post_to(FORM_CHANNEL_ID, deactivation_form_text(by_mention, rec, mm, reason))
     return result
 
 
@@ -567,7 +585,7 @@ async def deactivate(interaction: discord.Interaction, reason: str,
         return
 
     result = await finish_deactivation(interaction.user.mention, rec, reason, interaction.guild, strip_role=True)
-    await interaction.followup.send(embed=result, allowed_mentions=NO_MENTIONS)
+    await interaction.followup.send(result, allowed_mentions=NO_MENTIONS)
 
 
 @tree.command(name="القوائم", description="عرض المفعّلين")
