@@ -276,6 +276,46 @@ async def get_member(guild: discord.Guild, user_id: int):
         return None
 
 
+# ============ رسائل الخاص ============
+
+DM_ACTIVATED = (
+    "🎉 **تم تفعيل حسابك بنجاح!**\n\n"
+    "**مرحبًا بك {mention}،**\n"
+    "تم اعتماد وتفعيل صلاحية دخولك إلى **WL Emergency** بنجاح. ✅\n\n"
+    "يمكنك الآن الدخول إلى الماب والاستفادة من الصلاحيات المخصصة لك.\n\n"
+    "نتمنى لك تجربة ممتعة، ونراك داخل المدينة! 🚨💜\n\n"
+    "**WL Emergency | الإدارة**"
+)
+
+DM_DEACTIVATED = (
+    "⚠️ **تم إلغاء تفعيل حسابك!**\n\n"
+    "**مرحبًا بك {mention}،**\n"
+    "تم إلغاء صلاحية دخولك إلى **WL Emergency** بنجاح. ❌\n\n"
+    "📋 **سبب إلغاء التفعيل:**\n"
+    "{reason}\n\n"
+    "لم يعد بإمكانك الدخول إلى الماب أو الاستفادة من الصلاحيات المخصصة لك.\n\n"
+    "في حال كان لديك أي استفسار، يمكنك التواصل مع إدارة الماب. 📩\n\n"
+    "**WL Emergency | الإدارة**"
+)
+
+
+async def send_dm(user_id: int, template: str, **kwargs) -> bool:
+    """يرسل رسالة خاصة. يرجّع False إذا الخاص مقفول أو تعذّر الإرسال."""
+    try:
+        user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+        text = template.format(mention=f"<@{user_id}>", **kwargs)
+        await user.send(text[:2000], allowed_mentions=NO_MENTIONS)
+        return True
+    except discord.Forbidden:
+        log.info("الخاص مقفول عند %s", user_id)
+    except Exception as e:
+        log.warning("فشل إرسال الخاص إلى %s: %s", user_id, e)
+    return False
+
+
+DM_FAIL_NOTE = "⚠️ تعذّر إرسال رسالة الخاص (الخاص مقفول عند الشخص)"
+
+
 # ============ منطق التفعيل ============
 
 REASON_LABELS = {"normal": "التفعيل الطبيعي", "instant": "تفعيل فوري", "other": "سبب آخر"}
@@ -371,6 +411,8 @@ async def run_activation(interaction: discord.Interaction, roblox_username: str,
 
     by, mm = interaction.user.mention, member.mention
     result = activation_result_embed(by, record, mm, REASON_LABELS[kind])
+    if not await send_dm(member.id, DM_ACTIVATED):
+        result.set_footer(text=DM_FAIL_NOTE)
     await interaction.followup.send(embed=result, allowed_mentions=NO_MENTIONS)
     await post_to(LOG_CHANNEL_ID, result)
     await post_to(FORM_CHANNEL_ID, activation_form_embed(by, record, mm))
@@ -412,6 +454,8 @@ async def finish_deactivation(by_mention: str, rec: dict, reason: str, guild: di
                 log.error("فشل سحب رتبة التفعيل: %s", e)
     mm = member.mention if member else f"<@{did}>"
     result = deactivation_result_embed(by_mention, rec, mm, reason)
+    if not await send_dm(did, DM_DEACTIVATED, reason=reason):
+        result.set_footer(text=DM_FAIL_NOTE)
     await post_to(LOG_CHANNEL_ID, result)
     await post_to(FORM_CHANNEL_ID, deactivation_form_embed(by_mention, rec, mm, reason))
     return result
