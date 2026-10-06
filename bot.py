@@ -70,6 +70,8 @@ GUILD_OBJ = discord.Object(id=GUILD_ID)
 REASON_MAX = 300
 ROBLOX_NAME_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
 NO_MENTIONS = discord.AllowedMentions.none()
+# منشن حقيقي للأعضاء فقط (بدون رتب/everyone) — يُستخدم مع silent=True
+MENTION_USERS = discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False)
 
 
 # ============ أخطاء ============
@@ -223,7 +225,8 @@ def clean_reason(text: str) -> str:
 async def post_to(channel_id: int, text: str):
     try:
         ch = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-        await ch.send(text[:2000], allowed_mentions=NO_MENTIONS)
+        # silent=True: المنشن يتسجل (يطلع في البحث mentions:) بدون ما ينبّه الشخص
+        await ch.send(text[:2000], allowed_mentions=MENTION_USERS, silent=True)
     except Exception as e:
         log.error("فشل الإرسال إلى الروم %s: %s", channel_id, e)
 
@@ -423,7 +426,7 @@ async def run_activation(interaction: discord.Interaction, roblox_username: str,
     result = activation_result_text(by, record, mm, REASON_LABELS[kind])
     if not await send_dm(member.id, DM_ACTIVATED):
         result += "\n\n" + DM_FAIL_NOTE
-    await interaction.followup.send(result, allowed_mentions=NO_MENTIONS)
+    await interaction.followup.send(result, allowed_mentions=MENTION_USERS, silent=True)
     await post_to(LOG_CHANNEL_ID, result)
     await post_to(FORM_CHANNEL_ID, activation_form_text(by, record, mm))
 
@@ -585,7 +588,7 @@ async def deactivate(interaction: discord.Interaction, reason: str,
         return
 
     result = await finish_deactivation(interaction.user.mention, rec, reason, interaction.guild, strip_role=True)
-    await interaction.followup.send(result, allowed_mentions=NO_MENTIONS)
+    await interaction.followup.send(result, allowed_mentions=MENTION_USERS, silent=True)
 
 
 @tree.command(name="القوائم", description="عرض المفعّلين")
