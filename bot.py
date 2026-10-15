@@ -164,8 +164,9 @@ _db_lock = asyncio.Lock()
 
 
 def _sb_headers(extra: Optional[dict] = None) -> dict:
-    h = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
-         "Content-Type": "application/json"}
+    h = {"apikey": SUPABASE_KEY, "Content-Type": "application/json"}
+    if SUPABASE_KEY.startswith("eyJ"):  # المفاتيح القديمة (JWT) تحتاج Authorization، الجديدة sb_secret_ لا
+        h["Authorization"] = f"Bearer {SUPABASE_KEY}"
     if extra:
         h.update(extra)
     return h
