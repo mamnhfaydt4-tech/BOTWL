@@ -3,6 +3,7 @@ Discord Bot - نظام التفعيل (Roblox + Discord)
 - التفعيل يتطلب يوزر روبلوكس + حساب ديسكورد
 - الكتابة في Roblox DataStore عبر Open Cloud مع حماية من التعارض (matchVersion)
 - رتبة التفعيل شرط: لو انسحبت الرتبة أو خرج من السيرفر يتلغى التفعيل تلقائياً
+- قاعدة بيانات خارجية (Supabase) هي المصدر الرئيسي، والـ DataStore نسخة مرآة تقرأها اللعبة وتنصلح تلقائياً
 """
 
 import asyncio
@@ -49,6 +50,8 @@ REMOVE_ROLE_IDS = [
 ]                                               # الرتبتين اللي تنسحب عند التفعيل
 FORM_CHANNEL_ID = _int("FORM_CHANNEL_ID")      # روم نموذج التفعيل / الإلغاء
 LOG_CHANNEL_ID = _int("LOG_CHANNEL_ID")        # روم اللوق الاحتياطي
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")   # مثال: https://xxxx.supabase.co
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()               # service_role key
 
 DATASTORE_NAME = "ActivatedPlayers_V4"
 DATASTORE_KEY = "AllData"
@@ -57,6 +60,7 @@ _required = {
     "DISCORD_TOKEN": DISCORD_TOKEN, "ROBLOX_API_KEY": ROBLOX_API_KEY, "UNIVERSE_ID": UNIVERSE_ID,
     "OWNER_DISCORD_ID": OWNER_DISCORD_ID, "GUILD_ID": GUILD_ID, "ADMIN_ROLE_ID": ADMIN_ROLE_ID,
     "ACTIVE_ROLE_ID": ACTIVE_ROLE_ID, "FORM_CHANNEL_ID": FORM_CHANNEL_ID, "LOG_CHANNEL_ID": LOG_CHANNEL_ID,
+    "SUPABASE_URL": SUPABASE_URL, "SUPABASE_KEY": SUPABASE_KEY,
 }
 _missing = [k for k, v in _required.items() if not v]
 if _missing:
@@ -66,6 +70,7 @@ ENTRY_URL = (
     f"https://apis.roblox.com/datastores/v1/universes/{UNIVERSE_ID}"
     "/standard-datastores/datastore/entries/entry"
 )
+TABLE_URL = f"{SUPABASE_URL}/rest/v1/activated_players"
 GUILD_OBJ = discord.Object(id=GUILD_ID)
 REASON_MAX = 300
 ROBLOX_NAME_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
@@ -88,12 +93,7 @@ class VersionConflict(DataStoreError):
     pass
 
 
-# ============ DataStore ============
-# شكل البيانات:
-# {"players": {"<robloxUserId>": {robloxId, robloxName, discordId, reason, by, ts}}}
-
-_ds_lock = asyncio.Lock()
-
+# ============ DataStore (نسخة مرآة تقرأها اللعبة) ============
 
 def _empty() -> dict:
     return {"players": {}}
@@ -140,18 +140,102 @@ async def ds_write(session: aiohttp.ClientSession, data: dict, version: Optional
         raise DataStoreError(f"كتابة فاشلة: {resp.status} - {(await resp.text())[:200]}")
 
 
+async def sync_datastore(data: dict) -> bool:
+    """يخلي الـ DataStore مطابق لقاعدة البيانات. يرجّع True إذا نجح."""
+    for attempt in range(6):
+        try:
+            cur, version = await ds_read(bot.http_session)
+            if cur["players"] == data["players"]:
+                return True
+            await ds_write(bot.http_session, data, version)
+            return True
+        except VersionConflict:
+            await asyncio.sleep(0.3 * (attempt + 1))
+        except (DataStoreError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+            log.warning("sync DataStore: %s", e)
+            return False
+    return False
+
+
+# ============ قاعدة البيانات الخارجية (Supabase) — المصدر الرئيسي ============
+# الجدول: activated_players (roblox_id text primary key, data jsonb)
+
+_db_lock = asyncio.Lock()
+
+
+def _sb_headers(extra: Optional[dict] = None) -> dict:
+    h = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
+         "Content-Type": "application/json"}
+    if extra:
+        h.update(extra)
+    return h
+
+
+async def db_load() -> dict:
+    players: dict = {}
+    offset = 0
+    while True:
+        try:
+            async with bot.http_session.get(
+                TABLE_URL,
+                params={"select": "roblox_id,data", "order": "roblox_id",
+                        "limit": "1000", "offset": str(offset)},
+                headers=_sb_headers(),
+            ) as resp:
+                if resp.status != 200:
+                    raise DataStoreError(f"قاعدة البيانات: قراءة فاشلة {resp.status} - {(await resp.text())[:200]}")
+                rows = await resp.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            raise DataStoreError(f"تعذّر الاتصال بقاعدة البيانات: {e}")
+        for row in rows:
+            players[str(row["roblox_id"])] = row["data"]
+        if len(rows) < 1000:
+            break
+        offset += 1000
+    return {"players": players}
+
+
+async def db_upsert(key: str, rec: dict):
+    try:
+        async with bot.http_session.post(
+            TABLE_URL, params={"on_conflict": "roblox_id"},
+            headers=_sb_headers({"Prefer": "resolution=merge-duplicates,return=minimal"}),
+            json=[{"roblox_id": key, "data": rec}],
+        ) as resp:
+            if resp.status not in (200, 201, 204):
+                raise DataStoreError(f"قاعدة البيانات: كتابة فاشلة {resp.status} - {(await resp.text())[:200]}")
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        raise DataStoreError(f"تعذّر الاتصال بقاعدة البيانات: {e}")
+
+
+async def db_delete(key: str):
+    try:
+        async with bot.http_session.delete(
+            TABLE_URL, params={"roblox_id": f"eq.{key}"},
+            headers=_sb_headers({"Prefer": "return=minimal"}),
+        ) as resp:
+            if resp.status not in (200, 204):
+                raise DataStoreError(f"قاعدة البيانات: حذف فاشل {resp.status} - {(await resp.text())[:200]}")
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        raise DataStoreError(f"تعذّر الاتصال بقاعدة البيانات: {e}")
+
+
 async def mutate(fn):
-    """قراءة -> تعديل -> كتابة مع إعادة المحاولة عند التعارض. fn يعدّل data ويرجع نتيجة."""
-    async with _ds_lock:
-        for attempt in range(6):
-            data, version = await ds_read(bot.http_session)
-            result = fn(data)
-            try:
-                await ds_write(bot.http_session, data, version)
-                return result
-            except VersionConflict:
-                await asyncio.sleep(0.3 * (attempt + 1))
-        raise DataStoreError("تعذّرت الكتابة بسبب تعارض متكرر، حاول مرة أخرى")
+    """قراءة من القاعدة -> تعديل -> حفظ في القاعدة -> مزامنة DataStore. fn يعدّل data ويرجع نتيجة."""
+    async with _db_lock:
+        data = await db_load()
+        before = json.loads(json.dumps(data["players"]))
+        result = fn(data)  # قد يرفع UserError قبل أي كتابة
+        after = data["players"]
+        for k, rec in after.items():
+            if before.get(k) != rec:
+                await db_upsert(k, rec)
+        for k in before:
+            if k not in after:
+                await db_delete(k)
+        if not await sync_datastore(data):
+            log.warning("انحفظ في القاعدة لكن تأخرت مزامنة DataStore — بتنصلح خلال دقيقة")
+        return result
 
 
 # ============ Roblox API ============
@@ -364,7 +448,7 @@ async def run_activation(interaction: discord.Interaction, roblox_username: str,
                 raise UserError(f"رتبة البوت لازم تكون أعلى من الرتبة **{r.name}**")
 
         # فحص مسبق (بدون كتابة) عشان ما نعطي رتب لشخص مرفوض
-        data, _ = await ds_read(bot.http_session)
+        data = await db_load()
         for rec in data["players"].values():
             if int(rec.get("robloxId", 0)) == rid:
                 raise UserError(f"**{rname}** مفعّل مسبقاً")
@@ -600,7 +684,7 @@ async def list_players(interaction: discord.Interaction):
         return
     await interaction.response.defer(ephemeral=True)
     try:
-        data, _ = await ds_read(bot.http_session)
+        data = await db_load()
     except DataStoreError as e:
         log.error("DataStore: %s", e)
         await interaction.followup.send("❌ فشلت القراءة من DataStore", ephemeral=True)
@@ -665,15 +749,21 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
 @tasks.loop(seconds=60)
 async def reconcile_loop():
-    """شبكة أمان: تلتقط أي تغيير فاتنا (البوت كان مطفي، إلخ)."""
+    """شبكة أمان: تلتقط أي تغيير فاتنا (البوت كان مطفي، إلخ) + ترجّع الداتا إذا انمسحت."""
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
         return
     try:
-        data, _ = await ds_read(bot.http_session)
+        async with _db_lock:
+            data = await db_load()
+            # نخلي DataStore مطابق للقاعدة (يرجّع الداتا تلقائياً إذا انمسحت أو تغيّر الماب)
+            # حماية: لا نفرّغ DataStore بسبب قاعدة فاضية بالغلط
+            if data["players"]:
+                await sync_datastore(data)
     except DataStoreError as e:
         log.warning("reconcile: %s", e)
         return
+
     for rec in list(data["players"].values()):
         try:
             did = int(rec.get("discordId"))
